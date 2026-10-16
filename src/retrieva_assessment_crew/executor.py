@@ -17,7 +17,7 @@ from a2a.types import DataPart, Part
 from a2a.utils import new_agent_parts_message
 
 from .contract import validate_request, validate_response
-from .mock import build_mock_response
+from .crew import AssessmentCrew
 
 logger = logging.getLogger("retrieva-assessment-crew")
 
@@ -35,7 +35,12 @@ def _extract_request(context: RequestContext) -> dict[str, Any]:
 
 
 class AssessArrangementExecutor(AgentExecutor):
-    """Deterministic, stateless executor. Persists nothing; holds no DB credentials."""
+    """Stateless executor. Persists nothing; holds no DB credentials. The crew is injected so the A2A
+    plumbing is testable without an LLM (pass a stub `crew` with a `.run(request) -> dict`)."""
+
+    # `crew` is any object exposing run(request: dict) -> dict (real AssessmentCrew, or a test stub).
+    def __init__(self, crew: Any | None = None) -> None:
+        self._crew = crew or AssessmentCrew()
 
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
         request = _extract_request(context)
@@ -46,9 +51,10 @@ class AssessArrangementExecutor(AgentExecutor):
         await event_queue.enqueue_event(new_agent_parts_message([part]))
 
     def _assess(self, request: dict[str, Any]) -> dict[str, Any]:
-        # RTV-80: mock. RTV-81 replaces this with the CrewAI crew (clause-mapper -> gap-analyst ->
-        # control-scorer), keeping the same request-in / contract-response-out signature.
-        return build_mock_response(request)
+        # RTV-81: the real CrewAI crew (clause-mapper -> gap-analyst -> control-scorer). Same
+        # request-in / contract-response-out signature as the RTV-80 mock it replaces; degrades to
+        # insufficient-evidence when no LLM is configured.
+        return self._crew.run(request)
 
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
         raise NotImplementedError("assess-arrangement runs to completion; cancellation is not supported")
