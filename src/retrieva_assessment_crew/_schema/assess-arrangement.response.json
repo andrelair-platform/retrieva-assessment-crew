@@ -1,0 +1,118 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "controlLibraryVersion": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Echo of the library version assessed against"
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "controlRef": {
+            "type": "string",
+            "minLength": 1
+          },
+          "clauseRefs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Clause refs that map to this control"
+          },
+          "summary": {
+            "type": "string",
+            "description": "What the crew concluded for this control"
+          }
+        },
+        "required": [
+          "controlRef",
+          "clauseRefs",
+          "summary"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "verdicts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "controlRef": {
+            "type": "string",
+            "minLength": 1
+          },
+          "verdict": {
+            "type": "string",
+            "enum": [
+              "compliant",
+              "partial",
+              "non_compliant",
+              "insufficient_evidence",
+              "not_applicable"
+            ]
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          }
+        },
+        "required": [
+          "controlRef",
+          "verdict",
+          "confidence"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "citations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "evidenceId": {
+            "type": "string",
+            "minLength": 1,
+            "description": "An EvidenceRef.id that grounds a finding"
+          },
+          "controlRef": {
+            "type": "string"
+          },
+          "snippet": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "evidenceId"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "Overall calibrated confidence — drives the supervisor halt-on-doubt gate"
+    },
+    "insufficientEvidence": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Control refs with no retrievable evidence (not guessed)"
+    }
+  },
+  "required": [
+    "controlLibraryVersion",
+    "findings",
+    "verdicts",
+    "citations",
+    "confidence",
+    "insufficientEvidence"
+  ],
+  "additionalProperties": false
+}

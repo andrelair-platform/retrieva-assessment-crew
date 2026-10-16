@@ -1,0 +1,96 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "runId": {
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+      "description": "The assessment_runs.id this delegation belongs to"
+    },
+    "node": {
+      "default": "gap",
+      "description": "Calling supervisor node — idempotency key with runId",
+      "type": "string",
+      "minLength": 1
+    },
+    "arrangementId": {
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+      "description": "The ICT arrangement under assessment"
+    },
+    "controlLibraryVersion": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Control-library version to assess against (echoed in findings)"
+    },
+    "clauses": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "ref": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Stable clause reference, e.g. \"§12.3\""
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The contract clause text to map to controls"
+          }
+        },
+        "required": [
+          "ref",
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "description": "Contract clauses to map to DORA controls"
+    },
+    "evidenceRefs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Evidence chunk id (Qdrant point / document ref)"
+          },
+          "collection": {
+            "description": "Vector collection the chunk lives in",
+            "type": "string"
+          },
+          "source": {
+            "description": "Human-readable source (filename / title)",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
+      },
+      "description": "Evidence the crew may retrieve/cite; it persists nothing"
+    },
+    "context": {
+      "description": "Opaque passthrough (sessionId, locale, …)",
+      "type": "object",
+      "propertyNames": {
+        "type": "string"
+      },
+      "additionalProperties": {}
+    }
+  },
+  "required": [
+    "runId",
+    "node",
+    "arrangementId",
+    "controlLibraryVersion",
+    "clauses",
+    "evidenceRefs"
+  ],
+  "additionalProperties": false
+}
