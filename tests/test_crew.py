@@ -151,3 +151,5 @@ def test_ensure_all_controls_fills_dropped_controls_as_insufficient() -> None:
     assert by_ref["DORA-28.2-STRATEGY"] == "insufficient_evidence"  # filled
     assert by_ref["DORA-30.SUBCONTRACTING"] == "insufficient_evidence"  # filled
     assert set(out["insufficientEvidence"]) == {"DORA-28.2-STRATEGY", "DORA-30.SUBCONTRACTING"}
+    # the fill is VISIBLE (not a silent illusion): the model returned 1 of 3, we filled 2
+    assert out["_modelCoverage"] == {"returned": 1, "filled": 2, "total": 3}

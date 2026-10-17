@@ -5,7 +5,12 @@ from __future__ import annotations
 import pytest
 from jsonschema import ValidationError
 
-from retrieva_assessment_crew.contract import validate_request, validate_response
+from retrieva_assessment_crew.contract import (
+    request_schema,
+    response_schema,
+    validate_request,
+    validate_response,
+)
 from retrieva_assessment_crew.mock import build_mock_response
 
 VALID_REQUEST = {
@@ -59,3 +64,22 @@ def test_mock_defaults_to_insufficient_evidence_without_evidence() -> None:
     validate_response(resp)
     assert resp["verdicts"][0]["verdict"] == "insufficient_evidence"
     assert resp["insufficientEvidence"]  # non-empty
+
+
+def test_vendored_request_schema_declares_the_fields_the_crew_relies_on() -> None:
+    # Drift guard: the vendored schema is a hand-copied snapshot of the backend's generated schema.
+    # A stale/wrong copy that dropped a field the crew reads would silently break the integration —
+    # assert the request schema still declares the fields crew.py consumes (controls, clauses,
+    # evidenceRefs, controlLibraryVersion). (A true byte-match guard needs a shared schema package.)
+    props = request_schema().get("properties", {})
+    for field in ("controls", "clauses", "evidenceRefs", "controlLibraryVersion", "runId"):
+        assert field in props, f"vendored request schema is missing '{field}' — stale copy?"
+    # a control carries the ref the crew echoes + maps into the register
+    control_props = props["controls"]["items"]["properties"]
+    assert "ref" in control_props and "title" in control_props
+
+
+def test_vendored_response_schema_declares_verdicts_and_findings() -> None:
+    props = response_schema().get("properties", {})
+    for field in ("findings", "verdicts", "citations", "confidence", "insufficientEvidence"):
+        assert field in props, f"vendored response schema is missing '{field}' — stale copy?"
