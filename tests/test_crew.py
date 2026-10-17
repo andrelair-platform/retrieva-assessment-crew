@@ -19,6 +19,7 @@ from retrieva_assessment_crew.crew import (
     _canon_ref,
     _canonicalize,
     _ensure_all_controls,
+    _no_clause_result,
 )
 from retrieva_assessment_crew.executor import AssessArrangementExecutor
 
@@ -153,3 +154,22 @@ def test_ensure_all_controls_fills_dropped_controls_as_insufficient() -> None:
     assert set(out["insufficientEvidence"]) == {"DORA-28.2-STRATEGY", "DORA-30.SUBCONTRACTING"}
     # the fill is VISIBLE (not a silent illusion): the model returned 1 of 3, we filled 2
     assert out["_modelCoverage"] == {"returned": 1, "filled": 2, "total": 3}
+
+
+def test_no_clause_result_marks_all_controls_insufficient() -> None:
+    # RTV-81b §2a: no clauses → every passed control is insufficient_evidence, WITHOUT an LLM call.
+    req = {
+        "controlLibraryVersion": "1.0.0",
+        "controls": [
+            {"ref": "DORA-28.2-STRATEGY", "title": "Strategy", "description": ""},
+            {"ref": "DORA-30.3e-AUDIT-RIGHTS", "title": "Audit rights", "description": ""},
+        ],
+        "clauses": [],
+        "evidenceRefs": [],
+    }
+    out = _no_clause_result(req)
+    validate_response(out)  # contract-valid
+    assert {v["controlRef"] for v in out["verdicts"]} == {"DORA-28.2-STRATEGY", "DORA-30.3e-AUDIT-RIGHTS"}
+    assert all(v["verdict"] == "insufficient_evidence" for v in out["verdicts"])
+    assert out["confidence"] == 0.0
+    assert set(out["insufficientEvidence"]) == {"DORA-28.2-STRATEGY", "DORA-30.3e-AUDIT-RIGHTS"}

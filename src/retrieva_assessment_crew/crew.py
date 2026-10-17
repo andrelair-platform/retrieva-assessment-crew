@@ -168,6 +168,22 @@ def _insufficient_evidence(request: dict[str, Any], reason: str) -> dict[str, An
     }
 
 
+def _no_clause_result(request: dict[str, Any]) -> dict[str, Any]:
+    """All passed controls → insufficient_evidence, WITHOUT calling the LLM (RTV-81b §2a). Used when the
+    request has no clauses — nothing to assess, so the safe + honest result is insufficient for every
+    control (the supervisor halts for human review)."""
+    refs = [str(c["ref"]) for c in (request.get("controls") or []) if c.get("ref")] or ["DORA-ART28"]
+    reason = "no contract clauses to assess"
+    return {
+        "controlLibraryVersion": request.get("controlLibraryVersion", "unknown"),
+        "findings": [{"controlRef": r, "clauseRefs": [], "summary": reason} for r in refs],
+        "verdicts": [{"controlRef": r, "verdict": "insufficient_evidence", "confidence": 0.0} for r in refs],
+        "citations": [],
+        "confidence": 0.0,
+        "insufficientEvidence": refs,
+    }
+
+
 class AssessmentCrew:
     """The real crew. Construction is cheap (no LLM built here); the LLM + agents are built at run()."""
 
@@ -188,6 +204,12 @@ class AssessmentCrew:
         llm = self._make_llm()
         if llm is None:
             return _insufficient_evidence(request, "no LLM configured — human review required")
+        # 0-clause short-circuit (RTV-81b §2a, defence in depth — the supervisor skips us too): with no
+        # clauses there is nothing to map, and the LLM returns invalid output for N controls → wasted
+        # call + noisy json_invalid. Mark every passed control insufficient_evidence, no kickoff.
+        if not (request.get("clauses") or []):
+            logger.info("crew skipped — no clauses; all controls → insufficient_evidence")
+            return _no_clause_result(request)
         from .tracing import assessment_trace  # lazy: keep langfuse off the no-LLM/degraded path
 
         # One Langfuse trace per crew run, stitched to the supervisor by session_id = runId (RTV-81b).
