@@ -93,6 +93,14 @@ class AssessmentCrew:
         llm = self._make_llm()
         if llm is None:
             return _insufficient_evidence(request, "no LLM configured — human review required")
+        from .tracing import assessment_trace  # lazy: keep langfuse off the no-LLM/degraded path
+
+        # One Langfuse trace per crew run, stitched to the supervisor by session_id = runId (RTV-81b).
+        # Fail-safe: a no-op when tracing is disabled; never breaks the assessment.
+        with assessment_trace(request) as trace:
+            return self._run_crew(llm, request, trace)
+
+    def _run_crew(self, llm: Any, request: dict[str, Any], trace: Any) -> dict[str, Any]:
         try:
             from crewai import Agent, Crew, Process, Task
 
@@ -171,14 +179,20 @@ class AssessmentCrew:
                     "evidenceRefs": request.get("evidenceRefs", []),
                 }
             )
+            trace.record_agents(result)  # one Langfuse span per agent's task output (fail-safe)
             output = getattr(result, "pydantic", None)
             if not isinstance(output, AssessmentOutput):
-                return _insufficient_evidence(request, "crew produced no structured output")
+                data = _insufficient_evidence(request, "crew produced no structured output")
+                trace.finish(data, result)
+                return data
             data = output.model_dump()
             data["controlLibraryVersion"] = request.get(
                 "controlLibraryVersion", data.get("controlLibraryVersion", "unknown")
             )
+            trace.finish(data, result)  # final assessment + token usage on the root span
             return data
         except Exception as exc:  # noqa: BLE001 — a crew failure must halt safely, not crash the A2A call
             logger.warning("crew run failed — degrading to insufficient-evidence: %s", exc)
-            return _insufficient_evidence(request, "assessment could not complete — human review required")
+            data = _insufficient_evidence(request, "assessment could not complete — human review required")
+            trace.finish(data)
+            return data
