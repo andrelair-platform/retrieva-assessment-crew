@@ -117,17 +117,34 @@ def _ensure_all_controls(data: dict[str, Any], valid_refs: list[str]) -> dict[st
     """Guarantee a verdict for EVERY passed control. A weaker model tends to drop controls that no
     clause addresses; a DORA assessment must cover them all, so fill any missing control as
     `insufficient_evidence` (the safe default — the supervisor halts + a human reviews). Deterministic,
-    so completeness never depends on the model's diligence."""
+    so completeness never depends on the model's diligence.
+
+    Records how many controls the MODEL actually returned vs how many we FILLED
+    (data["_modelCoverage"] = {"returned", "filled", "total"}) so the fill is visible, not silent: a
+    high fill rate means the model engaged with few controls (the eval's honesty would otherwise look
+    perfect because of the fill, not the model). The caller logs/traces it; it is NOT part of the wire
+    response (stripped before validation)."""
     if not valid_refs:
         return data
     verdicts = data.setdefault("verdicts", [])
+    returned = len({v.get("controlRef") for v in verdicts} & set(valid_refs))
     present = {v.get("controlRef") for v in verdicts}
     insufficient = set(data.get("insufficientEvidence", []) or [])
+    filled = 0
     for ref in valid_refs:
         if ref not in present:
             verdicts.append({"controlRef": ref, "verdict": "insufficient_evidence", "confidence": 0.0})
             insufficient.add(ref)
+            filled += 1
     data["insufficientEvidence"] = sorted(insufficient)
+    data["_modelCoverage"] = {"returned": returned, "filled": filled, "total": len(valid_refs)}
+    if filled:
+        logger.info(
+            "completeness fill: model returned %d/%d controls; filled %d as insufficient_evidence",
+            returned,
+            len(valid_refs),
+            filled,
+        )
     return data
 
 
@@ -315,7 +332,9 @@ class AssessmentCrew:
             data["controlLibraryVersion"] = request.get(
                 "controlLibraryVersion", data.get("controlLibraryVersion", "unknown")
             )
-            trace.finish(data, result)  # final assessment + token usage on the root span
+            trace.finish(data, result)  # final assessment + token usage + model-coverage on the root span
+            # _modelCoverage is observability only — strip it before the wire response (strict schema).
+            data.pop("_modelCoverage", None)
             return data
         except Exception as exc:  # noqa: BLE001 — a crew failure must halt safely, not crash the A2A call
             logger.warning("crew run failed — degrading to insufficient-evidence: %s", exc)
