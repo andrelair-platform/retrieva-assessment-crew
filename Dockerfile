@@ -13,23 +13,20 @@ COPY . .
 RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-dev
 
 FROM python:3.12-slim AS runtime
-# Trust the minicloud CA for internal TLS (LiteLLM/Langfuse) — injected at build (ci-registry.md).
-# NEVER commit the CA; pass --build-arg CA_CERT="$(cat ~/minicloud-ca.crt)" or from the CI secret.
-ARG CA_CERT=""
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
-    && if [ -n "$CA_CERT" ]; then \
-         printf '%s' "$CA_CERT" > /usr/local/share/ca-certificates/minicloud-ca.crt && update-ca-certificates; \
-       fi \
-    && rm -rf /var/lib/apt/lists/*
-ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
-    REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt \
-    PATH="/app/.venv/bin:$PATH" \
+# No custom CA: the crew's egress is all IN-CLUSTER HTTP (LiteLLM/Langfuse/Qdrant via ClusterIP) — it
+# never speaks TLS, so httpx/openai use certifi's own (valid) bundle. The old minicloud-CA injection
+# appended the cert WITHOUT a trailing newline and forced SSL_CERT_FILE at the result → httpx's
+# ssl.load_verify_locations raised `[X509] PEM lib` at LLM construction. Dropped entirely (RTV-81b QA).
+# If internal TLS is ever introduced, inject a WELL-FORMED CA (printf '%s\n') + set SSL_CERT_FILE to it.
+ENV PATH="/app/.venv/bin:$PATH" \
     PORT=8080 \
     HOST=0.0.0.0
 WORKDIR /app
 COPY --from=builder /app/.venv /app/.venv
 COPY --from=builder /app/src /app/src
-RUN useradd -r -u 10001 appuser
+# uid 10001 WITH a home dir — CrewAI + litellm write cache/storage under $HOME; the old `useradd -r`
+# created no home (/home/appuser missing) → `Permission denied: '/home/appuser'` at run (RTV-81b QA).
+RUN useradd -u 10001 -m -d /home/appuser appuser
 USER appuser
 EXPOSE 8080
 # Console script defined in pyproject [project.scripts]; runs uvicorn via main().
