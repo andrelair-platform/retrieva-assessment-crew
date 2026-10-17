@@ -196,10 +196,13 @@ class AssessmentCrew:
             )
             gap_task = Task(
                 description=(
-                    "For each of the three catalog controls, state whether a clause addresses it and what "
-                    "is missing. A control no clause addresses is a full gap (→ insufficient_evidence)."
+                    "For each of the three catalog controls, state whether ANY clause addresses it and, if "
+                    "so, what the clause still leaves unspecified. Distinguish two cases clearly: (a) a "
+                    "clause addresses the control but implementation is unproven = a PARTIAL gap; (b) NO "
+                    "clause mentions the control at all = a FULL gap. Absence of a separate evidence "
+                    "document is NOT a full gap when a clause addresses the control."
                 ),
-                expected_output="Per-control coverage + gaps, citing the clause refs that support each.",
+                expected_output="Per-control: addressed by a clause? partial-gap vs full-gap, + clause refs.",
                 agent=gap_analyst,
                 context=[map_task],
             )
@@ -208,17 +211,24 @@ class AssessmentCrew:
                     "Produce the final assessment. Return EXACTLY three verdict objects — one per catalog "
                     "control. Each `controlRef` MUST be one of these literal ASCII strings, unchanged: "
                     "`DORA-ART28`, `DORA-ART29`, `DORA-ART30` (do not rename, abbreviate, renumber, or use "
-                    "a different hyphen). Rules:\n"
-                    "• A control a clause addresses → `partial` (or `compliant` only if the clause fully "
-                    "specifies the requirement AND cited evidence supports it). Base the contractual "
-                    "verdict on the CLAUSE TEXT; evidence refs raise confidence but their absence does NOT "
-                    "by itself force insufficient_evidence when a clause clearly addresses the control.\n"
-                    "• A control NO clause addresses → `insufficient_evidence`, and list its ref in "
-                    "insufficientEvidence.\n"
-                    f"• verdict ∈ {VERDICTS}; confidence ∈ [0,1], calibrated (high only with a direct "
-                    "clause + cited evidence; NEVER high with insufficient_evidence).\n"
-                    "• Cite only supplied evidence ids; omit snippet if you have no exact quote. "
-                    "NEVER fabricate a verdict or a citation."
+                    "a different hyphen).\n"
+                    "DORA Art. 28-30 govern what the CONTRACT must contain, so the clause text is the "
+                    "primary artefact. Decide each control's verdict by this table:\n"
+                    "  • a clause addresses it AND cited evidence proves implementation → `compliant`\n"
+                    "  • a clause addresses the control but implementation is unproven (no/weak evidence) → "
+                    "`partial`  ← this is the DEFAULT when a clause is present; a missing evidence document "
+                    "does NOT downgrade it to insufficient_evidence\n"
+                    "  • a clause exists but explicitly fails/contradicts the requirement → `non_compliant`\n"
+                    "  • NO clause addresses the control at all → `insufficient_evidence` (list its ref in "
+                    "insufficientEvidence)\n"
+                    "  • the control does not apply to this arrangement → `not_applicable`\n"
+                    "Worked example: a clause granting the client AND the competent authority rights of "
+                    "access, inspection and audit, with no separate evidence file, → DORA-ART30 = `partial` "
+                    "(the required provision is in the contract; implementation is simply unverified). It is "
+                    "NOT insufficient_evidence, because a clause addresses it.\n"
+                    f"verdict ∈ {VERDICTS}; confidence ∈ [0,1], calibrated (high only with a direct clause "
+                    "+ cited evidence; NEVER high with insufficient_evidence). Cite ONLY supplied evidence "
+                    "ids; omit snippet if you have no exact quote. NEVER fabricate a verdict or a citation."
                 ),
                 expected_output="A single AssessmentOutput JSON object matching the schema.",
                 agent=control_scorer,
