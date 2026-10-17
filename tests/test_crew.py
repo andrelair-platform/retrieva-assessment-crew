@@ -14,7 +14,12 @@ from types import SimpleNamespace
 from a2a.types import DataPart, Part
 
 from retrieva_assessment_crew.contract import validate_response
-from retrieva_assessment_crew.crew import AssessmentCrew, _canon_ref, _canonicalize
+from retrieva_assessment_crew.crew import (
+    AssessmentCrew,
+    _canon_ref,
+    _canonicalize,
+    _ensure_all_controls,
+)
 from retrieva_assessment_crew.executor import AssessArrangementExecutor
 
 REQUEST = {
@@ -22,6 +27,14 @@ REQUEST = {
     "node": "gap",
     "arrangementId": "22222222-2222-4222-8222-222222222222",
     "controlLibraryVersion": "dora-2026.1",
+    "controls": [
+        {
+            "ref": "DORA-28.8-EXIT-STRATEGY",
+            "doraArticleRef": "Article 28(8)",
+            "title": "Exit strategy",
+            "description": "Documented exit plan",
+        }
+    ],
     "clauses": [{"ref": "§12.3", "text": "The provider shall maintain an exit plan."}],
     "evidenceRefs": [{"id": "ev-1"}],
 }
@@ -113,3 +126,28 @@ def test_canonicalize_normalises_all_ref_fields() -> None:
     assert out["findings"][0]["controlRef"] == "DORA-ART28"
     assert out["citations"][0]["controlRef"] == "DORA-ART29"
     assert out["insufficientEvidence"] == ["DORA-ART28"]
+
+
+def test_canon_ref_snaps_to_passed_control_ids() -> None:
+    # RTV-81b §2: when the supervisor passes real control ids, snap the model's refs to THOSE.
+    refs = ["DORA-30.3e-AUDIT-RIGHTS", "DORA-28.8-EXIT-STRATEGY"]
+    assert _canon_ref("DORA‑30.3e‑AUDIT‑RIGHTS", refs) == "DORA-30.3e-AUDIT-RIGHTS"  # unicode hyphens
+    # model appended the title to the id → still snaps back
+    assert _canon_ref("DORA-28.8-EXIT-STRATEGY (Exit strategy)", refs) == "DORA-28.8-EXIT-STRATEGY"
+    assert _canon_ref("DORA-99-UNKNOWN", refs) == "DORA-99-UNKNOWN"  # not in the set → left as-is
+
+
+def test_ensure_all_controls_fills_dropped_controls_as_insufficient() -> None:
+    # A weak model may return only the addressed control; the assessment must still cover ALL passed
+    # controls — the rest are filled as insufficient_evidence (deterministic completeness).
+    refs = ["DORA-30.3e-AUDIT-RIGHTS", "DORA-28.2-STRATEGY", "DORA-30.SUBCONTRACTING"]
+    data = {
+        "verdicts": [{"controlRef": "DORA-30.3e-AUDIT-RIGHTS", "verdict": "partial", "confidence": 0.6}],
+        "insufficientEvidence": [],
+    }
+    out = _ensure_all_controls(data, refs)
+    by_ref = {v["controlRef"]: v["verdict"] for v in out["verdicts"]}
+    assert by_ref["DORA-30.3e-AUDIT-RIGHTS"] == "partial"  # kept
+    assert by_ref["DORA-28.2-STRATEGY"] == "insufficient_evidence"  # filled
+    assert by_ref["DORA-30.SUBCONTRACTING"] == "insufficient_evidence"  # filled
+    assert set(out["insufficientEvidence"]) == {"DORA-28.2-STRATEGY", "DORA-30.SUBCONTRACTING"}

@@ -13,8 +13,18 @@ VALID_REQUEST = {
     "node": "gap",
     "arrangementId": "22222222-2222-4222-8222-222222222222",
     "controlLibraryVersion": "dora-2026.1",
+    "controls": [
+        {
+            "ref": "DORA-28.8-EXIT-STRATEGY",
+            "doraArticleRef": "Article 28(8)",
+            "title": "Exit strategy",
+            "description": "Documented exit plan",
+        }
+    ],
     "clauses": [{"ref": "§12.3", "text": "The provider shall maintain an exit plan."}],
-    "evidenceRefs": [{"id": "ev-1", "collection": "compliance_kb", "source": "MSA.pdf"}],
+    "evidenceRefs": [
+        {"id": "ev-1", "collection": "compliance_kb", "source": "MSA.pdf", "text": "exit plan text"}
+    ],
 }
 
 

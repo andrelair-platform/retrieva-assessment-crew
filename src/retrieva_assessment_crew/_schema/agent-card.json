@@ -1,0 +1,39 @@
+{
+  "protocolVersion": "1.0",
+  "name": "retrieva-assessment-crew",
+  "description": "DORA ICT third-party assessment crew — maps contract clauses to controls, finds gaps, scores coverage. Evidence-grounded; output is proposed, not authoritative (human-gated by the supervisor).",
+  "version": "1.1.0",
+  "capabilities": {
+    "streaming": false,
+    "pushNotifications": false
+  },
+  "defaultInputModes": [
+    "application/json"
+  ],
+  "defaultOutputModes": [
+    "application/json"
+  ],
+  "skills": [
+    {
+      "id": "assess-arrangement",
+      "name": "Assess ICT arrangement for DORA",
+      "description": "Given clauses + evidence refs + a control-library version, return findings, verdicts, citations, an overall confidence, and the controls with insufficient evidence.",
+      "tags": [
+        "dora",
+        "ict-tprm",
+        "assessment",
+        "gap-analysis"
+      ],
+      "inputModes": [
+        "application/json"
+      ],
+      "outputModes": [
+        "application/json"
+      ],
+      "io": {
+        "requestSchema": "contracts/a2a/schema/assess-arrangement.request.json",
+        "responseSchema": "contracts/a2a/schema/assess-arrangement.response.json"
+      }
+    }
+  ]
+}
