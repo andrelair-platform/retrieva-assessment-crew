@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -24,6 +25,21 @@ from .settings import Settings, load_settings
 logger = logging.getLogger("retrieva-assessment-crew")
 
 VERDICTS = ("compliant", "partial", "non_compliant", "insufficient_evidence", "not_applicable")
+
+# Compact DORA ICT third-party control catalog (RTV-81b). Until the supervisor passes the full control
+# library in the A2A request, this canonical set gives the crew a STABLE ref taxonomy to map clauses to
+# — so verdicts are comparable across runs (the eval keys on these refs) instead of free-text prose.
+# Refs mirror the DORA (Reg. (EU) 2022/2554) articles governing ICT third-party arrangements.
+CONTROL_CATALOG = (
+    "DORA-ART28 — General principles: sound, documented, proportionate management of ICT third-party "
+    "risk across the arrangement lifecycle (strategy, register of information, risk assessment).\n"
+    "DORA-ART29 — Subcontracting & concentration: conditions, prior consent and oversight for "
+    "subcontracting the ICT services that support critical or important functions, incl. a subcontractor "
+    "register and ICT concentration-risk assessment.\n"
+    "DORA-ART30 — Key contractual provisions: the mandatory contract terms — service description & SLAs, "
+    "data access/processing/return & deletion on termination, access/inspection/audit rights for the "
+    "client AND the competent authority, incident assistance, and documented exit strategies/transition."
+)
 
 
 # ── Structured output (mirrors the RTV-79 response contract) ─────────────────────────────────────
@@ -52,6 +68,31 @@ class AssessmentOutput(BaseModel):
     citations: list[Citation] = Field(default_factory=list)
     confidence: float = 0.0
     insufficientEvidence: list[str] = Field(default_factory=list)
+
+
+_CANON = {"28": "DORA-ART28", "29": "DORA-ART29", "30": "DORA-ART30"}
+# LLMs render refs with unicode hyphens (‑ U+2011, – U+2013) and sometimes abbreviate; snap any ref that
+# names a catalog article back to its canonical ASCII form so verdicts are comparable across runs.
+_DASHES = str.maketrans({"‐": "-", "‑": "-", "‒": "-", "–": "-", "—": "-"})
+
+
+def _canon_ref(ref: Any) -> str:
+    s = str(ref).translate(_DASHES)
+    m = re.search(r"art\D*(28|29|30)\b", s, re.IGNORECASE)
+    return _CANON[m.group(1)] if m else s
+
+
+def _canonicalize(data: dict[str, Any]) -> dict[str, Any]:
+    """Normalise control refs to the canonical catalog form (hyphen/format drift is the LLM's, not ours)."""
+    for v in data.get("verdicts", []) or []:
+        v["controlRef"] = _canon_ref(v.get("controlRef", ""))
+    for f in data.get("findings", []) or []:
+        f["controlRef"] = _canon_ref(f.get("controlRef", ""))
+    for c in data.get("citations", []) or []:
+        if c.get("controlRef"):
+            c["controlRef"] = _canon_ref(c["controlRef"])
+    data["insufficientEvidence"] = [_canon_ref(r) for r in data.get("insufficientEvidence", []) or []]
+    return data
 
 
 def _insufficient_evidence(request: dict[str, Any], reason: str) -> dict[str, Any]:
@@ -87,7 +128,8 @@ class AssessmentCrew:
         from crewai import LLM  # lazy: keep import + cold-start cost out of module load
 
         model = os.getenv("LITELLM_MODEL", "openai/gpt-4o-mini")
-        return LLM(model=model, base_url=s.litellm_base_url, api_key=s.litellm_api_key, temperature=0.1)
+        # temperature 0: a compliance verdict must be reproducible — same inputs, same assessment.
+        return LLM(model=model, base_url=s.litellm_base_url, api_key=s.litellm_api_key, temperature=0)
 
     def run(self, request: dict[str, Any]) -> dict[str, Any]:
         llm = self._make_llm()
@@ -106,7 +148,10 @@ class AssessmentCrew:
 
             clause_mapper = Agent(
                 role="DORA clause mapper",
-                goal="Map each contract clause to the relevant DORA ICT third-party control(s).",
+                goal=(
+                    "Map each contract clause to the catalog control(s) it addresses, using the EXACT "
+                    "catalog ref (e.g. DORA-ART30). Map only what the clause text actually supports."
+                ),
                 backstory="A meticulous compliance analyst who only maps what the clause text supports.",
                 llm=llm,
                 verbose=False,
@@ -115,8 +160,8 @@ class AssessmentCrew:
             gap_analyst = Agent(
                 role="DORA gap analyst",
                 goal=(
-                    "Find where the mapped clauses fail to cover a control's requirements, "
-                    "grounded in the supplied evidence."
+                    "For EACH catalog control, judge whether the mapped clauses cover its requirement "
+                    "and what is still missing. A control that NO clause addresses is a full gap."
                 ),
                 backstory="A sceptical auditor who flags missing coverage and never assumes.",
                 llm=llm,
@@ -126,8 +171,8 @@ class AssessmentCrew:
             control_scorer = Agent(
                 role="DORA control scorer",
                 goal=(
-                    "Score each control with a calibrated verdict + confidence, defaulting to "
-                    "insufficient_evidence when the evidence does not support a conclusion."
+                    "Give every catalog control a calibrated verdict + confidence, grounded in the "
+                    "clause text and any cited evidence — never a guess, never a fabricated citation."
                 ),
                 backstory="A calibrated reviewer who would rather say 'insufficient evidence' than guess.",
                 llm=llm,
@@ -136,29 +181,44 @@ class AssessmentCrew:
             )
 
             ctx = (
+                f"DORA ICT third-party control catalog (assess against THESE, use the exact refs):\n"
+                f"{CONTROL_CATALOG}\n\n"
                 "Control library version: {controlLibraryVersion}\n"
-                "Clauses: {clauses}\n"
-                "Evidence references (cite by id; do NOT invent evidence): {evidenceRefs}"
+                "Contract clauses (the primary basis for contractual coverage):\n{clauses}\n"
+                "Evidence references — cite by id to support a finding; do NOT invent evidence:\n"
+                "{evidenceRefs}"
             )
             map_task = Task(
-                description="Map the clauses to DORA controls.\n" + ctx,
-                expected_output="A list of (control, clause refs) mappings grounded in the clause text.",
+                description="Map each clause to the catalog control(s) it addresses (use exact refs).\n"
+                + ctx,
+                expected_output="(control ref, clause refs) mappings grounded in the clause text.",
                 agent=clause_mapper,
             )
             gap_task = Task(
                 description=(
-                    "Given the mappings, identify coverage gaps per control, grounded in the evidence."
+                    "For each of the three catalog controls, state whether a clause addresses it and what "
+                    "is missing. A control no clause addresses is a full gap (→ insufficient_evidence)."
                 ),
-                expected_output="Per-control gaps with the clause refs that support/miss each requirement.",
+                expected_output="Per-control coverage + gaps, citing the clause refs that support each.",
                 agent=gap_analyst,
                 context=[map_task],
             )
             score_task = Task(
                 description=(
-                    "Produce the final assessment. For each control: a finding, a verdict from "
-                    f"{VERDICTS}, a calibrated confidence in [0,1], and citations to evidence ids. "
-                    "List controls with no supporting evidence in insufficientEvidence. "
-                    "NEVER fabricate a verdict or a citation — default to insufficient_evidence."
+                    "Produce the final assessment. Return EXACTLY three verdict objects — one per catalog "
+                    "control. Each `controlRef` MUST be one of these literal ASCII strings, unchanged: "
+                    "`DORA-ART28`, `DORA-ART29`, `DORA-ART30` (do not rename, abbreviate, renumber, or use "
+                    "a different hyphen). Rules:\n"
+                    "• A control a clause addresses → `partial` (or `compliant` only if the clause fully "
+                    "specifies the requirement AND cited evidence supports it). Base the contractual "
+                    "verdict on the CLAUSE TEXT; evidence refs raise confidence but their absence does NOT "
+                    "by itself force insufficient_evidence when a clause clearly addresses the control.\n"
+                    "• A control NO clause addresses → `insufficient_evidence`, and list its ref in "
+                    "insufficientEvidence.\n"
+                    f"• verdict ∈ {VERDICTS}; confidence ∈ [0,1], calibrated (high only with a direct "
+                    "clause + cited evidence; NEVER high with insufficient_evidence).\n"
+                    "• Cite only supplied evidence ids; omit snippet if you have no exact quote. "
+                    "NEVER fabricate a verdict or a citation."
                 ),
                 expected_output="A single AssessmentOutput JSON object matching the schema.",
                 agent=control_scorer,
@@ -185,7 +245,9 @@ class AssessmentCrew:
                 data = _insufficient_evidence(request, "crew produced no structured output")
                 trace.finish(data, result)
                 return data
-            data = output.model_dump()
+            # exclude_none: the wire contract's optional fields (e.g. citation.snippet) are OMITTABLE,
+            # not NULLABLE — emitting `null` fails validate_response (would break the live A2A call).
+            data = _canonicalize(output.model_dump(exclude_none=True))
             data["controlLibraryVersion"] = request.get(
                 "controlLibraryVersion", data.get("controlLibraryVersion", "unknown")
             )
