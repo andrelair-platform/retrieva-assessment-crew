@@ -9,7 +9,7 @@ evidence, eval) is RTV-81b, exercised on live dev where LiteLLM is reachable.
 from __future__ import annotations
 
 from retrieva_assessment_crew.contract import validate_response
-from retrieva_assessment_crew.crew import AssessmentCrew
+from retrieva_assessment_crew.crew import AssessmentCrew, _canon_ref, _canonicalize
 from retrieva_assessment_crew.executor import AssessArrangementExecutor
 
 REQUEST = {
@@ -56,3 +56,25 @@ def test_executor_runs_through_the_injected_crew() -> None:
     validate_response(out)
     assert stub.called_with == REQUEST
     assert out["verdicts"][0]["verdict"] == "partial"
+
+
+def test_canon_ref_snaps_llm_formatting_to_the_catalog() -> None:
+    # LLMs render unicode hyphens + abbreviate; the catalog taxonomy must survive that.
+    assert _canon_ref("DORA‑ART30") == "DORA-ART30"  # non-breaking hyphen
+    assert _canon_ref("dora art 28") == "DORA-ART28"
+    assert _canon_ref("Article 29 (subcontracting)") == "DORA-ART29"
+    assert _canon_ref("Something off-catalog") == "Something off-catalog"  # unknown → left as-is
+
+
+def test_canonicalize_normalises_all_ref_fields() -> None:
+    data = {
+        "verdicts": [{"controlRef": "DORA‑ART30", "verdict": "partial"}],
+        "findings": [{"controlRef": "art 28", "clauseRefs": [], "summary": ""}],
+        "citations": [{"evidenceId": "ev-1", "controlRef": "ART‑29"}],
+        "insufficientEvidence": ["dora-art28"],
+    }
+    out = _canonicalize(data)
+    assert out["verdicts"][0]["controlRef"] == "DORA-ART30"
+    assert out["findings"][0]["controlRef"] == "DORA-ART28"
+    assert out["citations"][0]["controlRef"] == "DORA-ART29"
+    assert out["insufficientEvidence"] == ["DORA-ART28"]
