@@ -8,6 +8,11 @@ evidence, eval) is RTV-81b, exercised on live dev where LiteLLM is reachable.
 
 from __future__ import annotations
 
+import asyncio
+from types import SimpleNamespace
+
+from a2a.types import DataPart, Part
+
 from retrieva_assessment_crew.contract import validate_response
 from retrieva_assessment_crew.crew import AssessmentCrew, _canon_ref, _canonicalize
 from retrieva_assessment_crew.executor import AssessArrangementExecutor
@@ -56,6 +61,36 @@ def test_executor_runs_through_the_injected_crew() -> None:
     validate_response(out)
     assert stub.called_with == REQUEST
     assert out["verdicts"][0]["verdict"] == "partial"
+
+
+def test_execute_runs_the_crew_off_the_event_loop() -> None:
+    """The A2A `execute` is async; the crew's kickoff() is sync and refuses a running event loop, so
+    execute must run it via asyncio.to_thread. This exercises the async path end-to-end (a stub crew —
+    the real CrewAI-in-loop failure is an integration issue caught by the live QA gate)."""
+    canned = {
+        "controlLibraryVersion": "dora-2026.1",
+        "findings": [{"controlRef": "DORA-ART30", "clauseRefs": ["§12.3"], "summary": "ok"}],
+        "verdicts": [{"controlRef": "DORA-ART30", "verdict": "partial", "confidence": 0.6}],
+        "citations": [],
+        "confidence": 0.6,
+        "insufficientEvidence": [],
+    }
+
+    class StubCrew:
+        def run(self, request: dict) -> dict:
+            return canned
+
+    captured: list = []
+
+    class StubQueue:
+        async def enqueue_event(self, event: object) -> None:
+            captured.append(event)
+
+    inbound = SimpleNamespace(parts=[Part(root=DataPart(data=REQUEST))])
+    ctx = SimpleNamespace(message=inbound, get_user_input=lambda: None)
+    ex = AssessArrangementExecutor(crew=StubCrew())
+    asyncio.run(ex.execute(ctx, StubQueue()))  # type: ignore[arg-type]
+    assert len(captured) == 1  # a contract-valid response was emitted
 
 
 def test_canon_ref_snaps_llm_formatting_to_the_catalog() -> None:

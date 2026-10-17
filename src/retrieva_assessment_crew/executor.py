@@ -7,6 +7,7 @@ against the wire contract, and emits it as a DataPart. RTV-80 returns the MOCK; 
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any
@@ -45,7 +46,10 @@ class AssessArrangementExecutor(AgentExecutor):
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
         request = _extract_request(context)
         validate_request(request)  # reject anything off-contract before doing work
-        response = self._assess(request)
+        # CrewAI's kickoff() is SYNC and refuses to run inside a running event loop ("Agent execution
+        # was invoked synchronously from within a running event loop"). The A2A executor IS async, so
+        # run the (blocking) crew in a worker thread — off the loop (also keeps the loop responsive).
+        response = await asyncio.to_thread(self._assess, request)
         validate_response(response)  # never emit an off-contract response
         part = Part(root=DataPart(data=response))
         await event_queue.enqueue_event(new_agent_parts_message([part]))
