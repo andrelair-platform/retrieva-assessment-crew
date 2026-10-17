@@ -71,27 +71,63 @@ class AssessmentOutput(BaseModel):
 
 
 _CANON = {"28": "DORA-ART28", "29": "DORA-ART29", "30": "DORA-ART30"}
-# LLMs render refs with unicode hyphens (‑ U+2011, – U+2013) and sometimes abbreviate; snap any ref that
-# names a catalog article back to its canonical ASCII form so verdicts are comparable across runs.
+# LLMs render refs with unicode hyphens (‑ U+2011, – U+2013) and sometimes append the title; snap each
+# emitted ref back to a KNOWN control id so verdicts are comparable + map 1:1 into the register.
 _DASHES = str.maketrans({"‐": "-", "‑": "-", "‒": "-", "–": "-", "—": "-"})
 
 
-def _canon_ref(ref: Any) -> str:
+def _norm(s: Any) -> str:
+    return str(s).translate(_DASHES).strip().lower()
+
+
+def _canon_ref(ref: Any, valid_refs: list[str] | None = None) -> str:
+    """Snap a model-emitted ref to a known control id. With `valid_refs` (the controls the supervisor
+    passed) an exact hyphen/case-normalised match wins, else a substring match; otherwise — for the
+    fallback catalog — the DORA-ARTnn heuristic; otherwise leave the ref untouched (dashes normalised)."""
     s = str(ref).translate(_DASHES)
+    if valid_refs:
+        by_norm = {_norm(r): r for r in valid_refs}
+        exact = by_norm.get(_norm(s))
+        if exact:
+            return exact
+        for nr, orig in by_norm.items():
+            if nr and nr in _norm(s):  # model appended the title / wrapped the id
+                return orig
+        return s
     m = re.search(r"art\D*(28|29|30)\b", s, re.IGNORECASE)
     return _CANON[m.group(1)] if m else s
 
 
-def _canonicalize(data: dict[str, Any]) -> dict[str, Any]:
-    """Normalise control refs to the canonical catalog form (hyphen/format drift is the LLM's, not ours)."""
+def _canonicalize(data: dict[str, Any], valid_refs: list[str] | None = None) -> dict[str, Any]:
+    """Normalise control refs to known control ids (hyphen/format drift is the LLM's, not ours)."""
     for v in data.get("verdicts", []) or []:
-        v["controlRef"] = _canon_ref(v.get("controlRef", ""))
+        v["controlRef"] = _canon_ref(v.get("controlRef", ""), valid_refs)
     for f in data.get("findings", []) or []:
-        f["controlRef"] = _canon_ref(f.get("controlRef", ""))
+        f["controlRef"] = _canon_ref(f.get("controlRef", ""), valid_refs)
     for c in data.get("citations", []) or []:
         if c.get("controlRef"):
-            c["controlRef"] = _canon_ref(c["controlRef"])
-    data["insufficientEvidence"] = [_canon_ref(r) for r in data.get("insufficientEvidence", []) or []]
+            c["controlRef"] = _canon_ref(c["controlRef"], valid_refs)
+    data["insufficientEvidence"] = [
+        _canon_ref(r, valid_refs) for r in data.get("insufficientEvidence", []) or []
+    ]
+    return data
+
+
+def _ensure_all_controls(data: dict[str, Any], valid_refs: list[str]) -> dict[str, Any]:
+    """Guarantee a verdict for EVERY passed control. A weaker model tends to drop controls that no
+    clause addresses; a DORA assessment must cover them all, so fill any missing control as
+    `insufficient_evidence` (the safe default — the supervisor halts + a human reviews). Deterministic,
+    so completeness never depends on the model's diligence."""
+    if not valid_refs:
+        return data
+    verdicts = data.setdefault("verdicts", [])
+    present = {v.get("controlRef") for v in verdicts}
+    insufficient = set(data.get("insufficientEvidence", []) or [])
+    for ref in valid_refs:
+        if ref not in present:
+            verdicts.append({"controlRef": ref, "verdict": "insufficient_evidence", "confidence": 0.0})
+            insufficient.add(ref)
+    data["insufficientEvidence"] = sorted(insufficient)
     return data
 
 
@@ -146,6 +182,21 @@ class AssessmentCrew:
         try:
             from crewai import Agent, Crew, Process, Task
 
+            # The supervisor passes the REAL applicable DORA controls (RTV-81b §2); the crew assesses
+            # against THESE and echoes each `ref` as the verdict/finding controlRef (→ 1:1 into the
+            # register). With none passed, fall back to the compact embedded catalog (ART28/29/30).
+            req_controls = request.get("controls") or []
+            if req_controls:
+                catalog = "\n".join(
+                    f"- {c.get('ref')} ({c.get('doraArticleRef', '')}) — "
+                    f"{c.get('title', '')}: {c.get('description', '')}"
+                    for c in req_controls
+                )
+                valid_refs = [str(c["ref"]) for c in req_controls if c.get("ref")]
+            else:
+                catalog = CONTROL_CATALOG
+                valid_refs = ["DORA-ART28", "DORA-ART29", "DORA-ART30"]
+
             clause_mapper = Agent(
                 role="DORA clause mapper",
                 goal=(
@@ -181,8 +232,8 @@ class AssessmentCrew:
             )
 
             ctx = (
-                f"DORA ICT third-party control catalog (assess against THESE, use the exact refs):\n"
-                f"{CONTROL_CATALOG}\n\n"
+                "DORA ICT third-party control catalog (assess against THESE, use the exact refs):\n"
+                f"{catalog}\n\n"
                 "Control library version: {controlLibraryVersion}\n"
                 "Contract clauses (the primary basis for contractual coverage):\n{clauses}\n"
                 "Evidence references — cite by id to support a finding; do NOT invent evidence:\n"
@@ -196,11 +247,11 @@ class AssessmentCrew:
             )
             gap_task = Task(
                 description=(
-                    "For each of the three catalog controls, state whether ANY clause addresses it and, if "
-                    "so, what the clause still leaves unspecified. Distinguish two cases clearly: (a) a "
-                    "clause addresses the control but implementation is unproven = a PARTIAL gap; (b) NO "
-                    "clause mentions the control at all = a FULL gap. Absence of a separate evidence "
-                    "document is NOT a full gap when a clause addresses the control."
+                    "For each control in the catalog, state whether ANY clause addresses it and, if so, "
+                    "what the clause still leaves unspecified. Distinguish two cases clearly: (a) a clause "
+                    "addresses the control but implementation is unproven = a PARTIAL gap; (b) NO clause "
+                    "mentions the control at all = a FULL gap. Absence of a separate evidence document is "
+                    "NOT a full gap when a clause addresses the control."
                 ),
                 expected_output="Per-control: addressed by a clause? partial-gap vs full-gap, + clause refs.",
                 agent=gap_analyst,
@@ -208,10 +259,12 @@ class AssessmentCrew:
             )
             score_task = Task(
                 description=(
-                    "Produce the final assessment. Return EXACTLY three verdict objects — one per catalog "
-                    "control. Each `controlRef` MUST be one of these literal ASCII strings, unchanged: "
-                    "`DORA-ART28`, `DORA-ART29`, `DORA-ART30` (do not rename, abbreviate, renumber, or use "
-                    "a different hyphen).\n"
+                    "Produce the final assessment. Output a verdict object for EVERY control in the "
+                    "catalog above — one per control, NONE omitted (if there are N controls, return N "
+                    "verdicts). Each `controlRef` MUST be copied VERBATIM from the catalog's `ref` ids "
+                    "(ASCII, unchanged — do not rename, abbreviate, renumber, or use a different hyphen). "
+                    "A control that no clause addresses is NOT dropped — it gets `insufficient_evidence` "
+                    "and its ref is added to insufficientEvidence.\n"
                     "DORA Art. 28-30 govern what the CONTRACT must contain, so the clause text is the "
                     "primary artefact. Decide each control's verdict by this table:\n"
                     "  • a clause addresses it AND cited evidence proves implementation → `compliant`\n"
@@ -223,9 +276,9 @@ class AssessmentCrew:
                     "insufficientEvidence)\n"
                     "  • the control does not apply to this arrangement → `not_applicable`\n"
                     "Worked example: a clause granting the client AND the competent authority rights of "
-                    "access, inspection and audit, with no separate evidence file, → DORA-ART30 = `partial` "
-                    "(the required provision is in the contract; implementation is simply unverified). It is "
-                    "NOT insufficient_evidence, because a clause addresses it.\n"
+                    "access, inspection and audit, with no separate evidence file → the audit/access-rights "
+                    "control = `partial` (the required provision is in the contract; implementation is "
+                    "simply unverified). It is NOT insufficient_evidence, because a clause addresses it.\n"
                     f"verdict ∈ {VERDICTS}; confidence ∈ [0,1], calibrated (high only with a direct clause "
                     "+ cited evidence; NEVER high with insufficient_evidence). Cite ONLY supplied evidence "
                     "ids; omit snippet if you have no exact quote. NEVER fabricate a verdict or a citation."
@@ -257,7 +310,8 @@ class AssessmentCrew:
                 return data
             # exclude_none: the wire contract's optional fields (e.g. citation.snippet) are OMITTABLE,
             # not NULLABLE — emitting `null` fails validate_response (would break the live A2A call).
-            data = _canonicalize(output.model_dump(exclude_none=True))
+            data = _canonicalize(output.model_dump(exclude_none=True), valid_refs)
+            data = _ensure_all_controls(data, valid_refs)
             data["controlLibraryVersion"] = request.get(
                 "controlLibraryVersion", data.get("controlLibraryVersion", "unknown")
             )

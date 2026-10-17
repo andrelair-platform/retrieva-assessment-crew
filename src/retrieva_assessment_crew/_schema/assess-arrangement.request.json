@@ -25,6 +25,39 @@
       "minLength": 1,
       "description": "Control-library version to assess against (echoed in findings)"
     },
+    "controls": {
+      "description": "Applicable controls to assess against; absent/empty → the crew falls back to its DORA catalog",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "ref": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Stable control id — the crew echoes it as the verdict/finding controlRef"
+          },
+          "doraArticleRef": {
+            "description": "DORA article reference, e.g. \"Article 30(3)(e)\"",
+            "type": "string"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Short control title"
+          },
+          "description": {
+            "type": "string",
+            "description": "What the control requires"
+          }
+        },
+        "required": [
+          "ref",
+          "title",
+          "description"
+        ],
+        "additionalProperties": false
+      }
+    },
     "clauses": {
       "type": "array",
       "items": {
@@ -65,6 +98,10 @@
           },
           "source": {
             "description": "Human-readable source (filename / title)",
+            "type": "string"
+          },
+          "text": {
+            "description": "The evidence passage text (when available) — grounds citations",
             "type": "string"
           }
         },
